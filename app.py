@@ -3,61 +3,70 @@ import sqlite3
 import pandas as pd
 import os
 
-st.set_page_config(page_title="SQLite Web Viewer", layout="wide")
+st.set_page_config(page_title="Advanced SQLite Manager", layout="wide")
 
-st.title("📂 SQLite 파일 웹 뷰어")
-st.info("왼쪽 사이드바에서 .db 또는 .sqlite 파일을 업로드하세요.")
+# DB 연결 및 메타데이터 가져오기 함수
+def get_objects(cursor, obj_type):
+    # type='table' 또는 type='view' 선택
+    cursor.execute(f"SELECT name FROM sqlite_master WHERE type='{obj_type}';")
+    return [row[0] for row in cursor.fetchall()]
 
-# 1. 파일 업로드 (사이드바)
-uploaded_file = st.sidebar.file_uploader("DB 파일 선택", type=["db", "sqlite", "sqlite3"])
+st.title("🗂️ SQLite Table & View Manager")
 
-if uploaded_file is not None:
-    # 업로드된 파일을 임시로 로컬에 저장 (sqlite3 연결을 위함)
-    temp_db = "temp_user_db.db"
+uploaded_file = st.sidebar.file_uploader("SQLite 파일 업로드", type=["db", "sqlite"])
+
+if uploaded_file:
+    # 임시 파일 저장
+    temp_db = "managed_user_db.db"
     with open(temp_db, "wb") as f:
         f.write(uploaded_file.getbuffer())
 
-    try:
-        # 2. DB 연결 및 테이블 목록 가져오기
-        conn = sqlite3.connect(temp_db)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [row[0] for row in cursor.fetchall()]
-
-        if not tables:
-            st.warning("데이터베이스 내에 테이블이 존재하지 않습니다.")
-        else:
-            # 3. 테이블 선택 UI
-            selected_table = st.sidebar.selectbox("조회할 테이블 선택", tables)
-            
-            # 4. 데이터 불러오기 (Pandas)
-            df = pd.read_sql_query(f"SELECT * FROM {selected_table}", conn)
-
-            # 5. 상단 지표 (자유자재 활용 예시)
-            col1, col2 = st.columns(2)
-            col1.metric("총 행 수 (Rows)", len(df))
-            col2.metric("컬럼 수 (Columns)", len(df.columns))
-
-            # 6. 데이터 출력 및 편집 모드
-            st.subheader(f"📊 {selected_table} 데이터 테이블")
-            st.data_editor(df, use_container_width=True) # 엑셀처럼 수정 가능
-
-            # 7. 간단한 시각화 추가 (숫자 데이터가 있을 경우)
-            num_cols = df.select_dtypes(include=['number']).columns.tolist()
-            if len(num_cols) >= 1:
-                st.subheader("📈 퀵 시각화")
-                target_col = st.selectbox("차트로 볼 컬럼 선택", num_cols)
-                st.line_chart(df[target_col])
-
-        conn.close()
-
-    except Exception as e:
-        st.error(f"에러 발생: {e}")
+    conn = sqlite3.connect(temp_db, check_same_thread=False)
     
-    finally:
-        # 사용이 끝난 후 임시 파일 삭제 (선택 사항)
-        if os.path.exists(temp_db):
-            pass 
-else:
-    st.write("---")
-    st.caption("파일을 업로드하면 여기에 데이터가 나타납니다.")
+    # --- 1. VIEW 생성 섹션 ---
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("✨ 새로운 VIEW 만들기")
+    view_name = st.sidebar.text_input("VIEW 이름", placeholder="v_user_summary")
+    view_query = st.sidebar.text_area("SQL Query (SELECT문)", placeholder="SELECT * FROM table WHERE...")
+    
+    if st.sidebar.button("VIEW 생성"):
+        if view_name and view_query:
+            try:
+                conn.execute(f"CREATE VIEW {view_name} AS {view_query}")
+                st.sidebar.success(f"'{view_name}' 뷰가 생성되었습니다!")
+                st.rerun() # 화면 새로고침하여 목록 갱신
+            except Exception as e:
+                st.sidebar.error(f"실패: {e}")
+        else:
+            st.sidebar.warning("이름과 쿼리를 모두 입력하세요.")
+
+    # --- 2. 데이터 조회 섹션 ---
+    tabs = st.tabs(["📊 데이터 조회", "🛠️ VIEW 관리"])
+
+    with tabs[0]:
+        obj_type = st.radio("오브젝트 타입", ["Table", "View"], horizontal=True)
+        objects = get_objects(conn.cursor(), obj_type.lower())
+        
+        selected_obj = st.selectbox(f"{obj_type} 선택", objects)
+        
+        if selected_obj:
+            df = pd.read_sql_query(f"SELECT * FROM {selected_obj}", conn)
+            st.dataframe(df, use_container_width=True)
+
+    with tabs[1]:
+        st.subheader("🗑️ VIEW 삭제")
+        all_views = get_objects(conn.cursor(), 'view')
+        if all_views:
+            target_view = st.selectbox("삭제할 VIEW 선택", all_views)
+            if st.button("선택한 VIEW 삭제", type="primary"):
+                conn.execute(f"DROP VIEW {target_view}")
+                st.success(f"'{target_view}' 삭제 완료")
+                st.rerun()
+        else:
+            st.write("생성된 VIEW가 없습니다.")
+
+    # 다운로드 버튼 (수정된 DB 저장)
+    with open(temp_db, "rb") as f:
+        st.sidebar.download_button("수정된 DB 다운로드", f, file_name="updated_database.db")
+
+    conn.close()
